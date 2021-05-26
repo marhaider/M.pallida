@@ -1,0 +1,448 @@
+################################################################################
+##                                                                            ##
+##                       		Workflow M.pallida                                ##
+##                                                                            ##
+################################################################################
+
+#########################################################
+##   preprocessing                                     ##
+##      * BBtools                                      ##
+##      * FastQC                                       ##
+#########################################################
+
+	#BBDuk quality trimming and quality filtering
+
+/home/lv70640/c7701046/software/bbmap/bbduk.sh in1=all_R1.fastq in2=all_R2.fastq \
+out1=all_qf_dec_R1.fastq out2=all_qf_dec_R2.fastq \
+ref=/home/lv70640/c7701046/software/bbmap/resources/phix174_ill.ref.fa k=31 hdist=1 stats=stats0.txt
+
+	#BBDuk kmer filtering for contaminants
+
+/home/lv70640/c7701046/software/bbmap/bbduk.sh in1=all_R1.fastq in2=all_R2.fastq \
+out1=all_qf_dec_R1.fastq out2=all_qf_dec_R2.fastq \
+ref=/home/lv70640/c7701046/software/bbmap/resources/phix174_ill.ref.fa k=31 hdist=1 stats=stats0.txt
+
+	#BBNorm normalization of reads
+
+bbnorm.sh in1=all.qf.dec_R1.fastq in2=all.qf.dec_R2.fastq out1=all.qf.dec.norm_R1.fastq \
+out2=all.qf.dec.norm_R2.fastq target=60 min=5
+
+#count bases in normalized fastq file
+
+cat all.qf.dec.norm_R1.fastq | awk '!(NR % 4)' | wc -m
+
+	#FastQC of normalized fastq.R1 files
+
+/home/lv70640/c7701100/software/FastQC/fastqc xxx_R1.fastq
+
+
+
+#########################################################
+##   De-novo transcriptome assembly + quality control  ##
+##      * Trinity                                      ##
+##      * CD-HIT                                       ##
+##      * bowtie2                                      ##
+##      * samtools                                     ##
+##      * blobtools                                    ##
+##      * BUSCO3																			 ##
+#########################################################
+
+
+
+#########################################################
+# De-novo Assembly Trinity
+#########################################################
+
+	#Trinity call: SS_lib_type strand specifiv RNA-Seq read orientation
+	#FR: first read of fragment pair is sequenced as sense and second read is in the antisense strand (reverse)
+	#jaccard_clip: if paired reads and expect of high gene density with UTR overlap
+
+/home/lv70640/c7701100/software/trinityrnaseq-2.1.1/Trinity --seqType fq \
+--left /global/lv70640/csaq7070/machilis/reads/all.qf.dec.norm_R1.fastq \
+--right /global/lv70640/csaq7070/machilis/reads/all.qf.dec.norm_R2.fastq \
+--CPU 24 --max_memory 128G --SS_lib_type FR --min_contig_length 500 --jaccard_clip \
+--normalize_by_read_set --output ./trinity_bowtie1_out
+
+#longest isoform
+
+/home/lv70640/c7701100/software/trinityrnaseq-2.1.1/util/misc/get_longest_isoform_seq_per_trinity_gene.pl \
+Trinity.fasta
+
+#CD-HIT find unigenes
+
+/home/lv70640/c7701100/software/cdhit-master/cd-hit-est -i \
+/global/lv70640/csaq7070/machilis/trinity_bowtie2_out/Trinity_clean2.fasta \
+-o Trinity_clean2_cdhit -M 0 -T 0 -aS 0.90 -n 8 -r 1 -d 0 -g 1
+
+
+
+#########################################################
+# Assembly quality assessment
+#########################################################
+
+	#mapping individuals to transcriptome - array job
+
+READ=$((SLURM_ARRAY_TASK_ID ))
+
+echo $READ
+
+IF=(/
+92360
+92361
+92362
+92363
+92364
+92365
+92366
+92367
+92368
+92369
+92370
+92371
+92372
+92373
+92374
+92375
+92376
+)
+
+/home/lv70640/c7701100/software/bowtie2-2.2.4/bowtie2 -p 10 -q --no-unal \
+-x /global/lv70640/csaq7070/machilis/trinity_out/Trinity.fasta \
+-1 /global/lv70640/csaq7070/machilis/norm.zip/$(echo "${IF[READ]}")_qf_dec_norm_R1.fastq.gz \
+-2 /global/lv70640/csaq7070/machilis/norm.zip/$(echo "${IF[READ]}")_qf_dec_norm_R2.fastq.gz | \
+/home/lv70640/c7701100/software/samtools-1.3/bin/samtools view -@10 -Sb \
+-o /global/lv70640/csaq7070/machilis/alignment/$(echo "${IF[READ]}")_bowtie2.bam 2>&1 \
+| tee /global/lv70640/csaq7070/machilis/alignment/align_stats_$(echo "${IF[READ]}").txt
+
+	#RNA Seq Read Representation by trinity assembly
+
+/home/lv70640/c7701100/software/bowtie2-2.2.4/bowtie2-build Trinity.fasta Trinity.fasta
+
+		#Read alignment stats
+
+/home/lv70640/c7701100/software/bowtie2-2.2.4/bowtie2 -p 10 -q --no-unal \
+-x Trinity.fasta -1 /global/lv70640/csaq7070/machilis/reads/all.qf.dec.norm_R1.fastq \
+-2 /global/lv70640/csaq7070/machilis/reads/all.qf.dec.norm_R2.fastq | \
+/home/lv70640/c7701100/software/samtools-1.3/bin/samtools view -@10 \
+-Sb -o bowtie2.bam 2>&1 | tee align_stats.txt
+
+		#visualize read support using IGV
+			#sort alignment by coordiantes
+
+/home/lv70640/c7701100/software/samtools-1.3/bin/samtools sort bowtie2.bam \
+-o bowtie2.coordSorted.bam
+
+			#index the coordinate-sorted bam files
+
+/home/lv70640/c7701100/software/samtools-1.3/bin/samtools index bowtie2.coordSorted.bam
+
+			#index the Trinity.fasta file
+
+/home/lv70640/c7701100/software/samtools-1.3/bin/samtools faidx Trinity.fasta
+
+	#Transcript quantification - abundance estimation
+		#RSEM
+
+perl /home/lv70640/c7701100/software/trinityrnaseq-2.1.1/util/align_and_estimate_abundance.pl \
+--transcripts Trinity.fasta --seqType fq \
+--left /global/lv70640/csaq7070/machilis/reads/all.qf.dec.norm_R1.fastq \
+--right /global/lv70640/csaq7070/machilis/reads/all.qf.dec.norm_R2.fastq \
+--est_method RSEM --output_dir ./abundance --aln_method bowtie --prep_reference --SS_lib_type FR
+
+perl /home/lv70640/csaq7070/software/trinityrnaseq-Trinity-v2.4.0/util/abundance_estimates_to_matrix.pl \
+--est_method RSEM --cross_sample_norm none --gene_trans_map none \
+/global/lv70640/csaq7070/machilis/trinity_bowtie2_out/abundance/RSEM.isoforms.results
+
+		#eXpress
+
+perl /home/lv70640/c7701100/software/trinityrnaseq-2.1.1/util/align_and_estimate_abundance.pl \
+--transcripts Trinity.fasta --seqType fq \
+--left /global/lv70640/csaq7070/machilis/reads/all.qf.dec.norm_R1.fastq
+--right /global/lv70640/csaq7070/machilis/reads/all.qf.dec.norm_R2.fastq \
+--est_method eXpress --output_dir ./abundance_express --aln_method bowtie --SS_lib_type FR
+
+perl /home/lv70640/csaq7070/software/trinityrnaseq-Trinity-v2.4.0/util/abundance_estimates_to_matrix.pl \
+--est_method eXpress --cross_sample_norm none --gene_trans_map none \
+/global/lv70640/csaq7070/machilis/trinity_bowtie2_out/abundance/abundance_express/results.xprs
+
+	#ExN50 value
+		#RSEM
+
+perl /home/lv70640/c7701100/software/trinityrnaseq-2.1.1/util/misc/contig_ExN50_statistic.pl \
+/global/lv70640/csaq7070/machilis/trinity_bowtie2_out/abundance/RSEM.isoform.TPM.not_cross_norm \
+/global/lv70640/csaq7070/machilis/trinity_bowtie2_out/Trinity2.fasta
+
+			#plot
+
+/home/lv70640/c7701100/software/R-3.1.2/bin/Rscript \
+/home/lv70640/csaq7070/software/trinityrnaseq-Trinity-v2.4.0/util/misc/plot_ExN50_statistic.Rscript \
+ExN50_rsem.stats
+
+		#Express
+
+perl /home/lv70640/c7701100/software/trinityrnaseq-2.1.1/util/misc/contig_ExN50_statistic.pl \
+/global/lv70640/csaq7070/machilis/trinity_bowtie2_out/abundance_express/eXpress.isoform.TPM.not_cross_norm \
+/global/lv70640/csaq7070/machilis/trinity_bowtie2_out/Trinity2.fasta
+
+			#plot
+
+/home/lv70640/c7701100/software/R-3.1.2/bin/Rscript \
+/home/lv70640/csaq7070/software/trinityrnaseq-Trinity-v2.4.0/util/misc/plot_ExN50_statistic.Rscript \
+ExN50_express.stats
+
+	#building gene to trans_map file
+
+perl /home/lv70640/c7701100/software/trinityrnaseq-2.1.1/util/support_scripts/get_Trinity_gene_to_trans_map.pl \
+/global/lv70640/csaq7070/machilis/trinity_outdir/Trinity.fasta >  \
+/global/lv70640/csaq7070/machilis/trinity_outdir/Trinity.fasta.gene_trans_map
+
+	#Trinity Transcritpome contig Nx stat
+
+/home/lv70640/c7701100/software/trinityrnaseq-2.1.1/util/TrinityStats.pl  Trinity.fasta
+
+	#Blobtools
+		#generating hits file
+
+/home/lv70640/c7701100/software/ncbi-blast-2.2.29+/bin/blastn \
+-query /global/lv70640/csaq7070/machilis/trinity_outdir/Trinity.fasta \
+-db /global/lv70640/csaq7070/blastdb/nt -max_target_seqs 1 -evalue 1e-5 \
+-num_threads 20 -outfmt "6 qseqid staxids bitscore score  evalue length" \
+-out ./blobtools/blast
+
+	#Blobtools create - create database
+
+python /home/lv70640/csaq7070/software/blobtools/lib/blobtools.py create \
+-i /global/lv70640/csaq7070/machilis/trinity_outdir/Trinity.fasta \
+-b /global/lv70640/csaq7070/machilis/trinity_outdir/read_alignment/bowtie2.bam \
+-t /global/lv70640/csaq7070/machilis/deltablast/all.trinity.fasta.deltablastp.outfmt6 \
+-o ./blobtools
+
+	#Blobtools view - generate tabular output for taxonomic rank
+
+python /home/lv70640/csaq7070/software/blobtools/lib/blobtools.py view \
+-i /global/lv70640/csaq7070/machilis/blobtools/create.blobDB.json \
+-o /global/lv70640/csaq7070/machilis/blobtools/
+
+	#Blobtools plot - plots data
+
+python /home/lv70640/csaq7070/software/blobtools/lib/blobtools.py plot \
+-i /global/lv70640/csaq7070/machilis/blobtools/create.blobDB.json \
+-r superkingdom \
+-o /global/lv70640/csaq7070/machilis/blobtools/
+
+#modify Trinity2.fasta file for remove contaminants of blobtools
+	#create fasta file with one liner sequence
+
+ awk '/^>/ { print (NR==1 ? "" : RS) $0; next } { printf "%s", $0 } END { printf RS }' Trinity2.fasta > test.fasta
+
+	#rm Bacteria and Virus (blobtools) from Transcripts
+
+grep -Ff /global/lv70640/csaq7070/machilis/blobtools_domain/Virus_Bac_1 -v \
+/global/lv70640/csaq7070/machilis/trinotate/Trinotate.xls > Trinotate_clean_Virus_Bac
+
+grep -Ff /global/lv70640/csaq7070/machilis/blobtools_bow/blob_del /global/lv70640/csaq7070/machilis/trinity_bowtie2_out/Trinotate.xls > Trinotate_bow_clean1.xls
+grep -Ff /global/lv70640/csaq7070/machilis/blobtools_bow/blob_del /global/lv70640/csaq7070/machilis/trinity_bowtie2_out/Trinotate.xls.gene_ontology > Trinotate_bow_GO_clean1.xls
+grep -A1 -Ff /global/lv70640/csaq7070/machilis/blobtools_bow/blob_del /global/lv70640/csaq7070/machilis/trinity_bowtie2_out/test.fasta > Trinity_clean1.fasta
+
+	#second blobtools run with new blast
+/home/lv70640/c7701100/software/ncbi-blast-2.2.29+/bin/blastn \
+-query /global/lv70640/csaq7070/machilis/trinity_outdir/Trinity_clean.fasta \
+-db /global/lv70640/csaq7070/g/nt -max_target_seqs 1 -evalue 1e-3 \
+-num_threads 20 -outfmt "6 qseqid staxids bitscore score  evalue length" \
+-out ./blobtools/blast
+
+grep -A1 -Ff /global/lv70640/csaq7070/machilis/blobtools_bow/run2/run2_del1 /global/lv70640/csaq7070/machilis/trinity_bowtie2_out/Trinity_clean1.fasta > Trinity_clean2.fasta
+288695
+grep -Ff /global/lv70640/csaq7070/machilis/blobtools_bow/run2/run2_del1 /global/lv70640/csaq7070/machilis/trinity_bowtie2_out/Trinotate_bow_clean1.xls > Trinotate_bow_clean2.xls
+grep -Ff /global/lv70640/csaq7070/machilis/blobtools_bow/run2/run2_del1 /global/lv70640/csaq7070/machilis/trinity_bowtie2_out/Trinotate_bow_GO_clean1.xls > Trinotate_bow_GO_clean2.xls
+
+	#BUSCO3
+
+python 	/home/lv70640/csaq7070/software/busco3/scripts/run_BUSCO.py \
+-i /global/lv70640/csaq7070/machilis/trinity_outdir/Trinity.fasta \
+-o all.trinity.busco -l /home/lv70640/csaq7070/software/busco3/insecta_odb9 -m tran
+
+#get longest isoform per trinity gene
+
+/home/lv70640/c7701100/software/trinityrnaseq-2.1.1/util/misc/get_longest_isoform_seq_per_trinity_gene.pl \
+Trinity.fasta
+
+
+
+#########################################################
+##   ORF prediction + annotation										 	 ##
+##      * TransDecoder                                 ##
+##			* BLAST																				 ##
+##			* HMMER																				 ##
+##			* Trinotate 																	 ##
+#########################################################
+
+#ORF prediction using TransDecoder
+	#Transdecoder - prediction of all ORF
+
+/home/lv70640/c7701100/software/TransDecoder-2.0.1/TransDecoder.LongOrfs -S \
+-t Trinity.fasta -m 75
+
+	#Homology search Blast
+
+/home/lv70640/c7701100/software/ncbi-blast-2.2.29+/bin/deltablast \
+-query Trinity.fasta.transdecoder_dir/longest_orfs.pep \
+db /global/lv70640/c7701100/DataBases/SwissProt/uniprot_sprot.fasta \
+-evalue 1e-5 -num_iterations 1 -max_target_seqs 1 \
+-outfmt 6 -out all.trinity.fasta.deltablastp.outfmt6 \
+-rpsdb /global/lv70640/c7701100/DataBases/CDDdelta/cdd_delta
+
+	#Pfam search - search the peptides for protein domains
+
+/home/lv70640/c7701100/software/hmmer-3.1b1-linux-intel-x86_64/binaries/hmmscan --cpu 24 \
+--domtblout Trinity.fasta.transdecoder_dir/longest_orfs.pep.pfam.domtblout \
+/global/lv70640/c7701100/DataBases/PFAM/Pfam-A.hmm \
+Trinity.fasta.transdecoder_dir/longest_orfs.pep > hmmscan.log
+
+	#Transdecoder predict - integrating the Blast and Pfam search results into coding region selection
+
+/home/lv70640/c7701100/software/TransDecoder-2.0.1/TransDecoder.Predict -t all.trinity.fasta \
+--retain_pfam_hits Trinity.fasta.transdecoder_dir/longest_orfs.pep.pfam.domtblout \
+--retain_blastp_hits ./all.trinity.fasta.deltablastp.outfmt6
+
+#Annotation using Trinotate - needs Transdecoder
+
+	#Trinity gene to trans map required
+	#Submit file in trinity-output folder
+
+perl /home/lv70640/c7701100/software/trinityrnaseq-2.1.1/util/support_scripts/get_Trinity_gene_to_trans_map.pl \
+/global/lv70640/csaq7070/machilis/trinity_outdir/Trinity.fasta >  \
+/global/lv70640/csaq7070/machilis/trinity_outdir/Trinity.fasta.gene_trans_map
+
+	#edit: conf.txt - Transdecoder no CPU parameter
+	#edit: TMHMM - add to $PATH, change PATH to python in tmhmm & tmhmmformat
+	#edit: SignalP - change max sequence numer in singalP
+	#Trinotate command 1 line!
+
+perl /home/lv70640/csaq7070/software/Trinotate-Trinotate-v3.1.1/auto/autoTrinotate.pl --Trinotate_sqlite /home/lv70640/csaq7070/Databases/Trinotate.sqlite --transcripts /global/lv70640/csaq7070/machilis/trinotate/Trinity.fasta --gene_to_trans_map /global/lv70640/csaq7070/machilis/trinity_outdir/Trinity.fasta.gene_trans_map --conf /home/lv70640/csaq7070/software/Trinotate-Trinotate-v3.1.1/auto/conf.txt --CPU 24
+
+
+#########################################################
+##   Variant snp_calling														 	 ##
+##      * bowtie2		                                   ##
+##			* samtools																		 ##
+##			* bcftools																		 ##
+##			* vcftools																		 ##
+##			* PLINK 																			 ##
+#########################################################
+
+#Mapping Individuals to reference transcriptome & SNP calling
+
+	#unzip and rm whitespace from normalized reads
+
+gunzip 92361_qf_dec_norm_R1.fastq.gz
+gunzip 92361_qf_dec_norm_R2.fastq.gz
+
+sed 's/\s/_/g' 92360_qf_dec_norm_R1.fastq > 92360_R1.fastq
+sed 's/\s/_/g' 92360_qf_dec_norm_R2.fastq > 92360_R2.fastq
+
+	#indexing reference tanscritpome
+
+home/lv70640/csaq7070/software/bowtie2-2.2.9/bowtie2-build -f \
+/global/lv70640/csaq7070/machilis/trinity_bowtie2_out/Trinity_total_clean.fasta \
+machilis_ref
+
+	#bowtie2: mapping reads and creating sam output
+
+/home/lv70640/csaq7070/software/bowtie2-2.2.9/bowtie2 -q -x machilis_ref \
+-1 /global/lv70640/csaq7070/machilis/norm.zip/92360_R1.fastq \
+-2 /global/lv70640/csaq7070/machilis/norm.zip/92360_R2.fastq \
+-S /global/lv70640/csaq7070/machilis/individual_transcriptome/92360.sam
+
+	#creating bam files
+
+home/lv70640/c7701100/software/samtools-1.3/bin/samtools view -bS 92360.sam > 92360.bam
+
+	#sorting bam files
+
+/home/lv70640/c7701100/software/samtools-1.3/bin/samtools sort 92360.bam -o 92360.sort
+
+	#samtools mpileup
+
+/home/lv70640/c7701100/software/samtools-1.3/bin/samtools mpileup -g \
+-f /global/lv70640/csaq7070/machilis/trinity_bowtie2_out/Trinity_total_clean.fasta \
+92360.sort  92361.sort  92362.sort  92363.sort 92364.sort  92365.sort  92366.sort  \
+92367.sort  92368.sort  92369.sort  92370.sort  92371.sort  92372.sort 92373.sort  \
+92374.sort  92375.sort  92376.sort > raw.bcf
+
+	#SNP calling
+
+/home/lv70640/c7701100/software/bcftools-1.3.1/bcftools call \
+-mv /global/lv70640/csaq7070/machilis/individual_transcriptome/raw.bcf > snp_calling.bcf
+
+	#first filter and creating vcf file
+
+/home/lv70640/c7701100/software/bcftools-1.3.1/bcftools view  snp_calling.bcf \
+|/home/lv70640/c7701100/software/bcftools-1.3.1/vcfutils.pl varFilter - > snp_final.vcf
+
+	#filter for missing data
+
+/home/lv70640/csaq7070/software/vcftools/bin/vcftools --vcf snp_final.vcf –missing-indv –out data
+
+	#remove variants with missing 0.5
+
+/home/lv70640/csaq7070/software/vcftools/bin/vcftools --vcf snp_final.vcf \
+--max-missing 0.5 --recode --recode-INFO-all --out data.miss0.5
+
+	#remove indels
+
+/home/lv70640/csaq7070/software/vcftools/bin/vcftools --vcf data.miss0.5.vcf \
+--remove-indels --recode --recode-INFO-all --out data.miss0.5.snp
+
+	#remove close sites
+
+/home/lv70640/csaq7070/software/vcftools/bin/vcftools --vcf data.miss0.5.snp.vcf \
+--thin 10 --recode --recode-INFO-all --out data.miss0.5.snp.thin10.vcf
+
+	#export vcf to plink format
+		#scaffold chromosome map for Plink format
+/home/lv70640/c7701100/software/bcftools-1.3.1/bcftools view -H data.miss0.5.snp.thin10.vcf
+| cut -f 1 | uniq | awk '{print $0"\t"$0}' > data.mis0.5.snp.thin10.chrom-map.txt
+
+		#export vcf file to plink format including chromose map
+/home/lv70640/csaq7070/software/vcftools/bin/vcftools --vcf data.miss0.5.snp.thin10.vcf
+ --plink --chrom-map data.mis0.5.snp.thin10.chrom-map.txt --out data.miss0.5.snp.thin10
+
+		#make new Family and Wihtin family IDs
+less data.miss0.5.snp.thin10.ped | cut -f 1,2 > updateID.txt
+
+		#update IDs using Plink
+plink --bfile data.miss0.5.snp.thin10 --aec --update-ids updateID.txt \
+--make-bed --out data.miss0.5.snp.thin10.newIDs
+
+		#Minor allele frequency (MAF) filtering
+plink --bfile data.miss0.5.snp.thin10.newIDs --aec --maf 0.05 --make-bed \
+--out data.miss0.5.snp.thin10.newIDs.maf0.05
+
+		#LD pruning
+plink --bfile data.miss0.5.snp.thin10.newIDs.maf0.05 --aec --indep-pairwise 1 kb 1 0.8
+--out data.miss0.5.snp.thin10.newIDs.maf0.05.ldkb1r0.8 &> /dev/null
+
+		#exclude exceeded variants
+plink --bfile data.miss0.5.snp.thin10.newIDs.maf0.05 --aec \
+--exclude data.miss0.5.snp.thin10.newIDs.maf0.05.ldkb1r0.8 \
+--out data.miss0.5.snp.thin10.newIDs.maf0.05.ldkb1r0.8 --make-bed
+
+		#LD pruning 2nd run
+plink --bfile data.miss0.5.snp.thin10.newIDs.maf0.05 --aec --indep-pairwise 1 kb 1 0.6
+--out data.miss0.5.snp.thin10.newIDs.maf0.05.ldkb1r0.6 &> /dev/null
+
+		#IBD pruning
+plink --bfile data.miss0.5.snp.thin10.newIDs.maf0.05.ldkb1r0.6 --genome \
+--out data.miss0.5.snp.thin10.newIDs.maf0.05.ldkb1r0.6.ibd
+
+		#PCA
+plink --bfile data.miss0.5.snp.thin10.newIDs.maf0.05.ldkb1r0.8.rm92370 --pca var-wts --out data.miss0.5.snp.thin10.newIDs.maf0.05.ldkb1r0.8.rm92370.pca --allow-extra-chr
+
+			#remove 92370
+ plink --bfile data.miss0.5.snp.thin10.newIDs.maf0.05.ldkb1r0.8
+ --remove exclude.txt --out data.miss0.5.snp.thin10.newIDs.maf0.05.ldkb1r0.8.rm92370
+ --make-bed  --allow-extra-chr
+
+	#Plink LD statistic reports
+plink --bfile data.miss0.5.snp.thin10.newIDs.maf0.05 --r2 --ld-window-kb 1 --ld-window 1000 --ld-window-r2 0 --out data.miss0.5.snp.thin10.newIDs.maf0.05.1kb.r0.stats --allow-extra-chr
