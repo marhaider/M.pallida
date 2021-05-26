@@ -1,6 +1,6 @@
 ################################################################################
 ##                                                                            ##
-##                       		Workflow M.pallida                                ##
+##                       		Workflow M.pallida                    ##
 ##                                                                            ##
 ################################################################################
 
@@ -44,7 +44,7 @@ cat all.qf.dec.norm_R1.fastq | awk '!(NR % 4)' | wc -m
 ##      * bowtie2                                      ##
 ##      * samtools                                     ##
 ##      * blobtools                                    ##
-##      * BUSCO3																			 ##
+##      * BUSCO3				       ##
 #########################################################
 
 
@@ -270,11 +270,11 @@ Trinity.fasta
 
 
 #########################################################
-##   ORF prediction + annotation										 	 ##
+##   ORF prediction + annotation		       ##
 ##      * TransDecoder                                 ##
-##			* BLAST																				 ##
-##			* HMMER																				 ##
-##			* Trinotate 																	 ##
+##	* BLAST					       ##
+##	* HMMER					       ##
+##	* Trinotate 				       ##
 #########################################################
 
 #ORF prediction using TransDecoder
@@ -323,12 +323,12 @@ perl /home/lv70640/csaq7070/software/Trinotate-Trinotate-v3.1.1/auto/autoTrinota
 
 
 #########################################################
-##   Variant snp_calling														 	 ##
-##      * bowtie2		                                   ##
-##			* samtools																		 ##
-##			* bcftools																		 ##
-##			* vcftools																		 ##
-##			* PLINK 																			 ##
+##   Variant snp_calling			       ##
+##      * bowtie2		                       ##
+##	* samtools				       ##
+##	* bcftools				       ##
+##	* vcftools				       ##
+##	* PLINK 				       ##
 #########################################################
 
 #Mapping Individuals to reference transcriptome & SNP calling
